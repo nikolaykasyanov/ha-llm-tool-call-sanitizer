@@ -1,0 +1,19 @@
+services:
+  ha-tool-sanitizer:
+    build: .
+    container_name: ha-tool-sanitizer
+    restart: unless-stopped
+    ports:
+      - "8100:8100"
+    environment:
+      # Where oMLX listens. host.docker.internal works on Docker Desktop
+      # (macOS/Windows); on Linux it is provided by the extra_hosts entry
+      # below. If oMLX runs on a different machine, put its address here.
+      UPSTREAM_BASE_URL: "http://host.docker.internal:8000"
+      # Tool-call argument names to sanitize (case-insensitive).
+      SANITIZE_KEYS: "name,area,floor"
+      # "first" = keep text before the first comma; "off" = passthrough.
+      STRIP_MODE: "first"
+      LOG_LEVEL: "INFO"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
