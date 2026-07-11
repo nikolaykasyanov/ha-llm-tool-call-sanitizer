@@ -1,7 +1,7 @@
 services:
-  ha-tool-sanitizer:
+  ha-llm-tool-sanitizer:
     build: .
-    container_name: ha-tool-sanitizer
+    container_name: ha-llm-tool-sanitizer
     restart: unless-stopped
     ports:
       - "8100:8100"
