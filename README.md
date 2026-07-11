@@ -49,10 +49,20 @@ sanitized HassTurnOn.name: 'Кухня, kitchen worktop light, подсветк�
 so you can watch `docker logs -f ha-tool-sanitizer` and see exactly how
 often the model still misbehaves.
 
+## Running without Docker (venv)
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+UPSTREAM_BASE_URL=http://localhost:8000 uvicorn app:app --host 0.0.0.0 --port 8100
+```
+
 ## Verifying
 
 ```bash
-# unit tests (no dependencies needed; fastapi/httpx are stubbed)
+# unit tests (no dependencies needed; fastapi/httpx are stubbed,
+# so this works even outside the venv)
 python3 -m unittest -v
 ```
 

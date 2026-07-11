@@ -2,7 +2,8 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir "fastapi>=0.110" "uvicorn>=0.29" "httpx>=0.27"
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py .
 
