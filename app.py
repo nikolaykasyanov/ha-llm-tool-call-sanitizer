@@ -360,6 +360,7 @@ async def healthz():
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
+    assert client is not None  # initialized in lifespan
     body = await request.json()
     wants_stream = bool(body.get("stream"))
     headers = {
@@ -449,6 +450,7 @@ async def chat_completions(request: Request):
 )
 async def passthrough(request: Request, path: str):
     """Transparent passthrough for every other endpoint (/v1/models, ...)."""
+    assert client is not None  # initialized in lifespan
     headers = {
         k: v for k, v in request.headers.items()
         if k.lower() not in _HOP_HEADERS
