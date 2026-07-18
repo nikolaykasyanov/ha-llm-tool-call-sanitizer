@@ -35,6 +35,7 @@ import time
 import uuid
 
 import httpx
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
@@ -58,8 +59,6 @@ logging.basicConfig(
 )
 log = logging.getLogger("sanitizer")
 
-app = FastAPI()
-
 _HOP_HEADERS = {
     "connection",
     "keep-alive",
@@ -78,20 +77,17 @@ _TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=60.0, pool=10.0)
 
 client: httpx.AsyncClient | None = None
 
-
-@app.on_event("startup")
-async def _startup() -> None:
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     global client
     client = httpx.AsyncClient(base_url=UPSTREAM, timeout=_TIMEOUT)
     log.info("proxying to %s, sanitizing keys %s (strip=%s, stream=%s)",
              UPSTREAM, sorted(SANITIZE_KEYS), STRIP_MODE, STREAM_MODE)
-
-
-@app.on_event("shutdown")
-async def _shutdown() -> None:
+    yield
     if client is not None:
         await client.aclose()
 
+app = FastAPI(lifespan=lifespan)
 
 # ---------------------------------------------------------- sanitizing
 
