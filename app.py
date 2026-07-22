@@ -26,6 +26,9 @@ Environment variables:
                      "buffer"    -> fetch whole completion, re-emit as SSE
   PORT               listen port (default: 8100)
   LOG_LEVEL          DEBUG / INFO / WARNING (default: INFO)
+                     DEBUG additionally dumps every request and response
+                     (headers + full body) with a correlation id; sensitive
+                     headers such as Authorization are redacted.
 """
 
 import json
@@ -76,6 +79,53 @@ _HOP_HEADERS = {
 _TIMEOUT = httpx.Timeout(connect=10.0, read=600.0, write=60.0, pool=10.0)
 
 client: httpx.AsyncClient | None = None
+
+# ---------------------------------------------------------- debug logging
+
+# Header values redacted from DEBUG dumps so credentials don't leak to logs.
+_SENSITIVE_HEADERS = {"authorization", "api-key", "x-api-key", "cookie"}
+
+
+def _new_rid() -> str:
+    """Short id correlating a request with its response across log lines."""
+    return uuid.uuid4().hex[:8]
+
+
+def _redact_headers(headers) -> dict:
+    return {
+        k: ("***redacted***" if k.lower() in _SENSITIVE_HEADERS else v)
+        for k, v in headers.items()
+    }
+
+
+def _fmt_body(body) -> str:
+    if body is None:
+        return ""
+    if isinstance(body, (dict, list)):
+        return json.dumps(body, ensure_ascii=False)
+    if isinstance(body, (bytes, bytearray)):
+        try:
+            return bytes(body).decode("utf-8")
+        except UnicodeDecodeError:
+            return f"<{len(body)} bytes, binary>"
+    return str(body)
+
+
+def _log_request(rid, method, path, headers, body) -> None:
+    if not log.isEnabledFor(logging.DEBUG):
+        return
+    log.debug("[%s] --> %s %s", rid, method, path)
+    log.debug("[%s] --> headers: %s", rid, _redact_headers(headers))
+    log.debug("[%s] --> body: %s", rid, _fmt_body(body))
+
+
+def _log_response(rid, status, headers, body, *, streamed=False) -> None:
+    if not log.isEnabledFor(logging.DEBUG):
+        return
+    tag = " (streamed)" if streamed else ""
+    log.debug("[%s] <-- %s%s", rid, status, tag)
+    log.debug("[%s] <-- headers: %s", rid, _redact_headers(headers))
+    log.debug("[%s] <-- body: %s", rid, _fmt_body(body))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -367,6 +417,8 @@ async def chat_completions(request: Request):
         k: v for k, v in request.headers.items()
         if k.lower() not in _HOP_HEADERS
     }
+    rid = _new_rid()
+    _log_request(rid, request.method, request.url.path, request.headers, body)
 
     # ---- live streaming path
     if wants_stream and STREAM_MODE == "transform":
@@ -385,6 +437,10 @@ async def chat_completions(request: Request):
         if upstream_response.status_code != 200:
             content = await upstream_response.aread()
             await upstream_response.aclose()
+            _log_response(
+                rid, upstream_response.status_code,
+                upstream_response.headers, content,
+            )
             return Response(
                 content=content,
                 status_code=upstream_response.status_code,
@@ -394,13 +450,22 @@ async def chat_completions(request: Request):
             )
 
         async def event_stream():
+            emitted = [] if log.isEnabledFor(logging.DEBUG) else None
             try:
                 async for event in transform_sse(
                     upstream_response.aiter_lines()
                 ):
+                    if emitted is not None:
+                        emitted.append(event)
                     yield event
             finally:
                 await upstream_response.aclose()
+                if emitted is not None:
+                    _log_response(
+                        rid, upstream_response.status_code,
+                        upstream_response.headers, "".join(emitted),
+                        streamed=True,
+                    )
 
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -419,6 +484,10 @@ async def chat_completions(request: Request):
         )
 
     if upstream_response.status_code != 200:
+        _log_response(
+            rid, upstream_response.status_code,
+            upstream_response.headers, upstream_response.content,
+        )
         return Response(
             content=upstream_response.content,
             status_code=upstream_response.status_code,
@@ -431,6 +500,9 @@ async def chat_completions(request: Request):
         payload = upstream_response.json()
     except ValueError:
         log.warning("upstream returned non-JSON body, passing through")
+        _log_response(
+            rid, 200, upstream_response.headers, upstream_response.content,
+        )
         return Response(
             content=upstream_response.content,
             status_code=200,
@@ -440,7 +512,11 @@ async def chat_completions(request: Request):
     payload = sanitize_completion(payload)
 
     if wants_stream:
+        _log_response(
+            rid, 200, upstream_response.headers, payload, streamed=True,
+        )
         return StreamingResponse(_as_sse(payload), media_type="text/event-stream")
+    _log_response(rid, 200, upstream_response.headers, payload)
     return JSONResponse(content=payload)
 
 
@@ -456,6 +532,8 @@ async def passthrough(request: Request, path: str):
         if k.lower() not in _HOP_HEADERS
     }
     content = await request.body()
+    rid = _new_rid()
+    _log_request(rid, request.method, request.url.path, request.headers, content)
     try:
         upstream_request = client.build_request(
             request.method,
@@ -478,11 +556,19 @@ async def passthrough(request: Request, path: str):
     }
 
     async def body_iter():
+        parts = [] if log.isEnabledFor(logging.DEBUG) else None
         try:
             async for part in upstream_response.aiter_bytes():
+                if parts is not None:
+                    parts.append(part)
                 yield part
         finally:
             await upstream_response.aclose()
+            if parts is not None:
+                _log_response(
+                    rid, upstream_response.status_code,
+                    upstream_response.headers, b"".join(parts), streamed=True,
+                )
 
     return StreamingResponse(
         body_iter(),
